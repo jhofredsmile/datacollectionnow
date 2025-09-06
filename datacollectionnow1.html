@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Network Data Collector</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background:#f8fafc; }
+    h2 { color: #1e3a8a; }
+    #status { margin: 10px 0; font-weight: bold; color:#047857; }
+    button { 
+      padding: 14px 22px; 
+      margin: 8px; 
+      border:none; 
+      border-radius:8px; 
+      cursor:pointer; 
+      font-size: 16px;
+    }
+    .collect { background:#2563eb; color:white; }
+    .download { background:#059669; color:white; }
+    table { border-collapse: collapse; margin-top:15px; width:100%; font-size:14px; }
+    th,td { border:1px solid #ccc; padding:6px; text-align:center; }
+    th { background:#e0e7ff; }
+    .delete-btn { background:#dc2626; color:white; border:none; padding:4px 10px; border-radius:4px; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <h2>📡 Network Data Collector</h2>
+  <p id="status">Ready.</p>
+  <button class="collect" onclick="collectData()">📍 Collect Data</button>
+  <button class="download" onclick="downloadCSV()">⬇️ Download CSV</button>
+
+  <table id="dataTable">
+    <thead>
+      <tr>
+        <th>Sl No</th><th>Latitude</th><th>Longitude</th><th>Time</th>
+        <th>Area</th><th>Network</th><th>Device</th>
+        <th>Ping (ms)</th><th>Jitter (ms)</th><th>Speed (Mbps)</th><th>Delete</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+<script>
+let records = [];
+let serial = 1;
+
+async function measurePing(iter=5){
+  let times=[];
+  for(let i=0;i<iter;i++){
+    const start=performance.now();
+    await fetch("https://www.cloudflare.com/cdn-cgi/trace",{cache:"no-store"});
+    times.push(performance.now()-start);
+  }
+  let avg = times.reduce((a,b)=>a+b,0)/times.length;
+  let jit = times.slice(1).reduce((s,t,i)=>s+Math.abs(t-times[i]),0)/(times.length-1);
+  return {ping:avg.toFixed(1), jitter:jit.toFixed(1)};
+}
+
+async function measureSpeed(size=1000000){
+  const start=performance.now();
+  const res = await fetch("https://speed.cloudflare.com/__down?bytes="+size,{cache:"no-store"});
+  await res.blob();
+  const end=performance.now();
+  return ((size*8)/(end-start)/1e6).toFixed(2);
+}
+
+function simplifyDevice(){
+  let ua=navigator.userAgent;
+  if(ua.includes("Android")) return "Android Phone";
+  if(ua.includes("iPhone")) return "iPhone";
+  if(ua.includes("iPad")) return "iPad";
+  if(ua.includes("Windows")) return "Windows PC";
+  if(ua.includes("Macintosh")) return "Mac";
+  return "Other Device";
+}
+
+async function collectData(){
+  document.getElementById("status").textContent="Requesting location...";
+  if(!navigator.geolocation){ 
+    document.getElementById("status").textContent="❌ Geolocation not supported."; 
+    return; 
+  }
+
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    let lat=pos.coords.latitude.toFixed(6);
+    let lon=pos.coords.longitude.toFixed(6);
+    let time=new Date().toISOString();
+
+    document.getElementById("status").textContent="Measuring network...";
+
+    let net = (navigator.connection?.effectiveType||"Unknown").toUpperCase();
+    let device = simplifyDevice();
+
+    const {ping,jitter} = await measurePing();
+    const speed = await measureSpeed();
+
+    // Reverse geocode
+    let area="Unknown";
+    try{
+      let res=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`);
+      let j=await res.json();
+      area = j.address.city || j.address.town || j.address.county || j.address.state || "Unknown";
+    }catch(e){}
+
+    let row=[serial,lat,lon,time,area,net,device,ping,jitter,speed];
+    records.push(row);
+    addRow(row, records.length-1);
+    serial++;
+
+    document.getElementById("status").textContent="✅ Data Collected.";
+  }, err=>{
+    document.getElementById("status").textContent="❌ Location error: "+err.message;
+  }, { enableHighAccuracy:true, timeout:10000 });
+}
+
+function addRow(row, index){
+  let tbody=document.querySelector("#dataTable tbody");
+  let tr=document.createElement("tr");
+  row.forEach(val=>{
+    let td=document.createElement("td");
+    td.textContent=val;
+    tr.appendChild(td);
+  });
+  let delTd=document.createElement("td");
+  let btn=document.createElement("button");
+  btn.textContent="X";
+  btn.className="delete-btn";
+  btn.onclick=()=>{ deleteRow(index,tr); };
+  delTd.appendChild(btn);
+  tr.appendChild(delTd);
+  tbody.appendChild(tr);
+}
+
+function deleteRow(index,tr){
+  records.splice(index,1);
+  tr.remove();
+}
+
+function downloadCSV(){
+  if(records.length===0){ alert("No data to download."); return; }
+  let header=["Sl No","Latitude","Longitude","Time","Area","Network","Device","Ping (ms)","Jitter (ms)","Speed (Mbps)"];
+  let csv=[header.join(",")];
+  records.forEach(r=>csv.push(r.join(",")));
+  let blob=new Blob([csv.join("\n")],{type:"text/csv"});
+  let url=URL.createObjectURL(blob);
+  let a=document.createElement("a");
+  a.href=url;
+  a.download="network_data.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
